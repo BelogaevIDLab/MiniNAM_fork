@@ -868,7 +868,7 @@ class MiniNAM( Frame ):
                          default=False, help="don't use passive listening " +
                          "port")
         opts.add_option( '--pre', type='string', default=None,
-                         help='CLI script to run before tests' )
+                         help='CLI script to run after the network starts (before tests)' )
         opts.add_option( '--post', type='string', default=None,
                          help='CLI script to run after tests' )
         opts.add_option( '--pin', action='store_true',
@@ -987,6 +987,10 @@ class MiniNAM( Frame ):
             nat.configDefault()
 
         self.net.start()
+
+        if self.options.pre:
+            CLI(self.net, script=self.options.pre)
+
 
     def runTest( self ):
 
