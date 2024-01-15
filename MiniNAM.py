@@ -906,12 +906,17 @@ class MiniNAM( Frame ):
                          metavar='block|random',
                          help=( 'node placement for --cluster '
                                 '(experimental!) ' ) )
+        opts.add_option( '--linkDelay', type="float", default=0.1,
+                        help="link delays, ms")
         opts.add_option( '--ipmininet', action='store_true',
                         default=False, help="enable ipmininet support")
         opts.add_option( '--allocateIPs', action='store_true',
                         default=False, help="preallocate IPs from ipbase or not")
 
         self.options, self.args = opts.parse_args()
+
+        #update variable LinkTime
+        LinkTime = self.options.linkDelay
 
         # We don't accept extra arguments after the options
         if self.args:
