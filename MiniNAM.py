@@ -22,11 +22,22 @@ from struct import *
 from subprocess import *
 import threading
 
+#workaround for ipmininet support
+import sys
+print(sys.argv[1:])
+if '--ipmininet' in sys.argv[1:]:
+    from ipmininet.cli import IPCLI as CLI
+    from ipmininet.ipnet import IPNet as Mininet
+    from ipmininet.host import IPHost as Host
+else:        
+    from mininet.cli import CLI
+    from mininet.net import Mininet
+    from mininet.node import Host
+
 from mininet.clean import cleanup
-from mininet.cli import CLI
 from mininet.log import lg, LEVELS, info, debug, warn, error
 from mininet.net import MininetWithControlNet
-from mininet.node import ( Host, Node, CPULimitedHost, Controller, OVSController,
+from mininet.node import ( Node, CPULimitedHost, Controller, OVSController,
                            Ryu, NOX, RemoteController, findController,
                            DefaultController, NullController,
                            UserSwitch, OVSSwitch, OVSBridge,
@@ -55,7 +66,7 @@ import tkinter.simpledialog as tkSimpleDialog
 import json
 from distutils.version import StrictVersion
 from mininet.term import makeTerm, cleanUpScreens
-from mininet.net import Mininet, VERSION
+from mininet.net import VERSION
 from mininet.util import quietRun
 import random
 from threading import Thread
@@ -103,7 +114,7 @@ HOSTDEF = 'proc'
 HOSTS = {'proc': Host,
               'rt': specialClass(CPULimitedHost, defaults=dict(sched='rt')),
               'cfs': specialClass(CPULimitedHost, defaults=dict(sched='cfs'))}
-HOSTS_TYPES = ['Host', 'CPULimitedHost']
+HOSTS_TYPES = ['Host', 'CPULimitedHost', 'IPHost']
 
 CONTROLLERDEF = 'default'
 CONTROLLERS = {'ref': Controller,
@@ -122,7 +133,7 @@ LINKS = {'default': Link,
               'ovs': OVSLink}
 LINKS_TYPES = ['Link', 'TCLink', 'OVSLink', 'TCULink']
 
-LEGACY_TYPES = ['LegacyRouter', 'LinuxRouter', 'LegacySwitch']
+LEGACY_TYPES = ['LegacyRouter', 'LinuxRouter', 'LegacySwitch', 'Router']
 
 FLOWTIMEDEF = 'Fast'
 FLOWTIME = OrderedDict([('Very Slow', 40000),('Slow',20000),('Fast', 5000), ('Very Fast', 1000), ('Real Time', 1)])
@@ -892,6 +903,10 @@ class MiniNAM( Frame ):
                          metavar='block|random',
                          help=( 'node placement for --cluster '
                                 '(experimental!) ' ) )
+        opts.add_option( '--ipmininet', action='store_true',
+                        default=False, help="enable ipmininet support")
+        opts.add_option( '--allocateIPs', action='store_true',
+                        default=False, help="preallocate IPs from ipbase or not")
 
         self.options, self.args = opts.parse_args()
 
@@ -971,15 +986,25 @@ class MiniNAM( Frame ):
             Net = partial( MininetCluster, servers=servers,
                            placement=self.PLACEMENT[ self.options.placement ] )
 
-
-        self.net = Net( topo=topo,
-                  switch=switch, host=host, controller=controller,
-                  link=link,
-                  ipBase=ipBase,
-                  inNamespace=inNamespace,
-                  xterms=xterms, autoSetMacs=mac,
-                  autoStaticArp=arp, autoPinCpus=pin,
-                  listenPort=listenPort )
+        if self.options.ipmininet and not self.options.allocateIPs:
+            self.net = Net( topo=topo,
+                    switch=switch, host=host, controller=controller,
+                    link=link,
+                    ipBase=ipBase,
+                    inNamespace=inNamespace,
+                    xterms=xterms, autoSetMacs=mac,
+                    autoStaticArp=arp, autoPinCpus=pin,
+                    listenPort=listenPort,
+                    allocate_IPs=False)
+        else:
+            self.net = Net( topo=topo,
+                    switch=switch, host=host, controller=controller,
+                    link=link,
+                    ipBase=ipBase,
+                    inNamespace=inNamespace,
+                    xterms=xterms, autoSetMacs=mac,
+                    autoStaticArp=arp, autoPinCpus=pin,
+                    listenPort=listenPort )
 
         if self.options.ensure_value( 'nat', False ):
             nat = self.net.addNAT( *self.options.nat_args,
