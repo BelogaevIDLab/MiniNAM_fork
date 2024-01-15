@@ -90,7 +90,7 @@ if 'PYTHONPATH' in os.environ:
     sys.path = os.environ[ 'PYTHONPATH' ].split( ':' ) + sys.path
 
 Eth_Protocols = {'8':'IP', '1544':'ARP', '56710':'IPv6'}
-IP_Protocols = {'1':'ICMP', '6':'TCP', '17':'UDP'}
+IP_Protocols = {'1':'ICMP', '6':'TCP', '17':'UDP', '58':'ICMPv6'}
 
 TOPODEF = 'minimal'
 TOPOS = {'minimal': MinimalTopo,
@@ -183,7 +183,7 @@ def packetParser(packet):
         PacketInfo['dstMAC'] = str(dstMAC)
         PacketInfo['eth_protocol'] = str(eth_protocol)
 
-        # Parse IP packets, IP Protocol number = 8
+        # Parse IPv4 packets
         if eth_protocol == 8:
             # Parse IP header
             # take first 20 characters for the ip header
@@ -199,8 +199,8 @@ def packetParser(packet):
 
             ttl = iph[5]
             protocol = iph[6]
-            s_addr = socket.inet_ntoa(iph[8]);
-            d_addr = socket.inet_ntoa(iph[9]);
+            s_addr = socket.inet_ntoa(iph[8])
+            d_addr = socket.inet_ntoa(iph[9])
 
             PacketInfo['s_addr'] = s_addr
             PacketInfo['d_addr'] = d_addr
@@ -295,7 +295,56 @@ def packetParser(packet):
             PacketInfo['s_addr'] = str(s_addr)
             PacketInfo['d_addr'] = str(d_addr)
             PacketInfo['protocol_type'] = protocol_type
-        #Other EthPackets like IPv6 can be parsed here.
+        
+        #Parse IPv6 packets
+        elif eth_protocol == 56710:
+            # Parse IP header
+            # take first 40 characters for the ip header
+            ip_header = packet[eth_length:40 + eth_length]
+
+            # now unpack them
+            iph = unpack('!IHBB16s16s', ip_header)
+
+            version = iph[0] & 0xF0000000
+            prio = iph[0] & 0xFF00000
+            flow_label = iph[0] & 0xFFFFF
+            payload_length = iph[1]
+            next_header = iph[2]
+            hop_limit = iph[3]
+            
+            s_addr = socket.inet_ntop(socket.AF_INET6, iph[4])
+            d_addr = socket.inet_ntop(socket.AF_INET6, iph[5])
+            
+            PacketInfo['s_addr'] = s_addr
+            PacketInfo['d_addr'] = d_addr
+            PacketInfo['ip_protocol'] = str(next_header)
+            PacketInfo['ttl'] = str(hop_limit)
+
+            # ICMPv6 Packets
+            if next_header == 58:
+                u = iph_length + eth_length
+                icmph_length = 4
+                icmp_header = packet[u:u + 4]
+
+                # now unpack them
+                icmph = unpack('!BBH', icmp_header)
+
+                icmp_type = icmph[0]
+                code = icmph[1]
+                checksum = icmph[2]
+
+                h_size = eth_length + iph_length + icmph_length
+                data_size = len(packet) - h_size
+
+                # get data from the packet
+                data = packet[h_size:]
+                PacketInfo['icmp_type'] = str(icmp_type)
+                PacketInfo['code'] = str(code)
+                PacketInfo['checksum'] = str(checksum)
+                PacketInfo['data'] = data
+            # Other IPv6 packets like TCP or UDP can be parsed here.
+            else:
+                pass
         else:
             pass
 
@@ -583,7 +632,7 @@ class MiniNAM( Frame ):
             'displayHosts': 1,
             'flowTime': FLOWTIME[FLOWTIMEDEF],
             'nodeColors': 'Source',
-            'typeColors': {'ARP': 'Red', 'TCP': 'Green', 'ICMP': 'Blue', 'UDP': 'Green'},
+            'typeColors': {'ARP': 'Red', 'TCP': 'Green', 'ICMP': 'Blue', 'ICMPv6': 'Blue', 'UDP': 'Green'},
             'startCLI': 1,
             'terminalType': 'xterm',
             'showAddr': 'None',
@@ -591,8 +640,8 @@ class MiniNAM( Frame ):
             'identifyFlows': 1
         }
         self.appFilters={
-            'showPackets': ['TCP', 'UDP', 'ICMP'],    #ARP?
-            'hidePackets': ['IPv6'],
+            'showPackets': ['TCP', 'UDP', 'ICMP', 'ICMPv6'],    #ARP?
+            'hidePackets': [],
             'hideFromIPMAC': ['0.0.0.0', '255.255.255.255'],
             'hideToIPMAC': ['0.0.0.0', '255.255.255.255']
         }
@@ -1059,7 +1108,6 @@ class MiniNAM( Frame ):
     # Topology and Sniffing
 
     def TopoInfo(self):
-
         #Gather node info for all nodes in the network
         for item , value in list(self.net.items()):
             if value.__class__.__name__ in CONTROLLERS_TYPES:
@@ -1067,8 +1115,9 @@ class MiniNAM( Frame ):
             elif value.__class__.__name__ in SWITCHES_TYPES:
                 self.Nodes.append({'name': item, 'widget': None, 'type': value.__class__.__name__, 'dpid':value.dpid, 'color': None, 'controllers':[]})
             elif value.__class__.__name__ in HOSTS_TYPES:
+                ipstr = value.network_ips()[item][0] if value.__class__.__name__ == 'IPHost' else value.IP()
                 if  self.appPrefs['displayHosts'] == 1:
-                    self.Nodes.append({'name': item, 'widget': None, 'type': value.__class__.__name__, 'ip':value.IP(), 'color': None})
+                    self.Nodes.append({'name': item, 'widget': None, 'type': value.__class__.__name__, 'ip':ipstr, 'color': None})
                 else:
                     continue
             else:
