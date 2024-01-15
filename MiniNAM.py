@@ -24,7 +24,6 @@ import threading
 
 #workaround for ipmininet support
 import sys
-print(sys.argv[1:])
 if '--ipmininet' in sys.argv[1:]:
     from ipmininet.cli import IPCLI as CLI
     from ipmininet.ipnet import IPNet as Mininet
@@ -78,6 +77,8 @@ from PIL import Image, ImageDraw
 from PIL import ImageTk as itk
 import queue as Queue
 from collections import OrderedDict
+
+from pyroute2 import netns
 
 MININET_VERSION = re.sub(r'[^\d\.]', '', VERSION)
 if StrictVersion(MININET_VERSION) > StrictVersion('2.0'):
@@ -706,10 +707,12 @@ class MiniNAM( Frame ):
             error('Network does not exist. Do not use net(stop) in your script if you want GUI to load.')
             sys.exit()
 
-        #Start siniffing packets on Mininet interfaces
-        self.sniff = Thread( target=self.sniff )
-        self.sniff.daemon = True
-        self.sniff.start()
+        #Start siniffing packets on Mininet interfaces (in all network namespaces)
+        sniff_threads = []
+        for ns_pid in self.get_pids_with_command ("mininet"):
+            sniff_threads.append(Thread( target=self.sniff, args=(ns_pid, ) ))
+            sniff_threads[-1].daemon = True
+            sniff_threads[-1].start()
 
         #Start CLI thread if requested
         if self.appPrefs['startCLI'] == 1:
@@ -1101,9 +1104,31 @@ class MiniNAM( Frame ):
                 return data
         return None
 
-    def sniff( self ):
+    def get_pids_with_command(self, keyword):
+        try:
+            # Run the lsns command
+            lsns_output = check_output(['lsns', '-t', 'net', '-o', 'PID,COMMAND'], universal_newlines=True)
+
+            # Split the output into lines
+            lines = lsns_output.strip().split('\n')
+
+            # Extract PIDs with the specified keyword in their command
+            matching_pids = [line.split()[0] for line in lines if keyword in line]
+            
+            matching_pids.append (os.getpid())
+
+            return matching_pids
+
+        except CalledProcessError as e:
+            print(f"Error running lsns command: {e}")
+            return []
+
+
+    def sniff( self, ns_pid ):
 
         #Create raw socket to receive everything
+        netns.setns(f"/proc/{ns_pid}/ns/net")
+
         try:
             s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(0x0003))
         except socket.error as msg:
@@ -1154,15 +1179,12 @@ class MiniNAM( Frame ):
             PacketInfo['direction'] = direction
 
             try:
-                #MiniNAM sniffs packets as they are received, except for the packets going to the host.
-                #This is because hosts are separate processes in Mininet and their interfaces are not
-                #actual interfaces on the machine. So to sniff packets reaching hosts, we look at the
-                #packets leaving the last-hop switch.
+                #MiniNAM sniffs packets as they are sent
                 if direction == "outgoing":
                     intf["TXB"] += len(packet)
                     intf["TXP"] += 1
                     link = self.intfExists(intf["link"])
-                    if link['type'] in HOSTS_TYPES or link['type'] in ['LinuxRouter', 'LinuxSwitch'] :
+                    if link['type'] in HOSTS_TYPES or link['type'] in ['LinuxRouter', 'LinuxSwitch', 'OVSSwitch', 'Router', 'UserSwitch']:
                         link["RXB"] += len(packet)
                         link["RXP"] += 1
                         #Check if the packet should be color coded by IP
@@ -1177,28 +1199,6 @@ class MiniNAM( Frame ):
                         PacketInfo['time'] = LinkTime
                         #Create a packet object to be displayed in the GUI
                         self.createPacket(src, dst, PacketInfo)
-
-                #Sniff packets reaching at any interface
-                if direction == "incoming":
-                    intf["RXB"] += len(packet)
-                    intf["RXP"] += 1
-                    link = self.intfExists(intf["link"])
-                    if link['type'] in HOSTS_TYPES or link['type'] in ['LinuxRouter', 'LinuxSwitch']:
-                        link = self.intfExists(intf["link"])
-                        link["TXB"] += len(packet)
-                        link["TXP"] += 1
-                    # Check if the packet should be color coded by IP
-                    if self.appPrefs['nodeColors'] == 'Source':
-                        sender = next((node for node in self.Nodes if 'ip' in node if node['ip'] == s_addr), None)
-                        PacketInfo['node_color'] = sender['color'] if sender else 'black'
-                    if self.appPrefs['nodeColors'] == 'Destination':
-                        receiver = next((node for node in self.Nodes if 'ip' in node if node['ip'] == d_addr), None)
-                        PacketInfo['node_color'] = receiver['color'] if receiver else 'black'
-                    src, dst = intf["link"].split('-')[0], intf["node"]
-                    # To view the effect of link delays LinkTime value can be replaced by actual link delays set in Mininet
-                    PacketInfo['time'] = LinkTime
-                    # Create a packet object to be displayed in the GUI
-                    self.createPacket(src, dst, PacketInfo)
 
             except Exception:
                 print('Exception in function sniff')

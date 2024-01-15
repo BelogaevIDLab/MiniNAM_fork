@@ -13,12 +13,12 @@ class MyTopo( IPTopo ):
  
         # Add links between the switch and each host
         lr1h1 = self.addLink(r1, h1)
-        lr1h1[h1].addParams(ip=("10.0.0.1/24"))
-        lr1h1[r1].addParams(ip=("10.0.0.2/24"))
+        lr1h1[h1].addParams(ip=("10.0.0.1/24"), delay=("100ms"))
+        lr1h1[r1].addParams(ip=("10.0.0.2/24"), delay=("100ms"))
         
         lr1h2 = self.addLink(r1, h2)
-        lr1h2[h2].addParams(ip=("10.0.1.1/24"))
-        lr1h2[r1].addParams(ip=("10.0.1.2/24"))
+        lr1h2[h2].addParams(ip=("10.0.1.1/24"), delay=("100ms"))
+        lr1h2[r1].addParams(ip=("10.0.1.2/24"), delay=("100ms"))
         
         super().build(*args, **kwargs)
         
