@@ -77,6 +77,7 @@ from PIL import Image, ImageDraw
 from PIL import ImageTk as itk
 import queue as Queue
 from collections import OrderedDict
+import re
 
 from pyroute2 import netns
 
