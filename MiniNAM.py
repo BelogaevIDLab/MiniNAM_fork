@@ -80,6 +80,7 @@ from collections import OrderedDict
 import re
 
 from pyroute2 import netns
+import select
 
 MININET_VERSION = re.sub(r'[^\d\.]', '', VERSION)
 if StrictVersion(MININET_VERSION) > StrictVersion('2.0'):
@@ -353,6 +354,29 @@ def packetParser(packet):
 
     except:
         return PacketInfo
+
+def get_ns_path(nspid=None):
+        nspath = '/proc/%d/ns/net' % int(nspid)
+        return nspath
+
+class Namespace (object):
+    def __init__(self, nspid=None):
+        self.mypath = get_ns_path(os.getpid())
+        self.targetpath = get_ns_path(nspid)
+
+        if not self.targetpath:
+            raise ValueError('invalid namespace')
+
+    def __enter__(self):
+        netns.setns(self.targetpath)
+
+    def __exit__(self, *args):
+        netns.setns(self.mypath)
+
+def nssocket(pid, *args):
+    with Namespace(nspid=pid):
+        s = socket.socket(*args)
+        return s
 
 class PrefsDialog(tkSimpleDialog.Dialog):
     "Preferences dialog"
@@ -758,11 +782,9 @@ class MiniNAM( Frame ):
             sys.exit()
 
         #Start siniffing packets on Mininet interfaces (in all network namespaces)
-        sniff_threads = []
-        for ns_pid in self.get_pids_with_command ("mininet"):
-            sniff_threads.append(Thread( target=self.sniff, args=(ns_pid, ) ))
-            sniff_threads[-1].daemon = True
-            sniff_threads[-1].start()
+        sniff_thread = Thread( target=self.sniff, args=(self.get_pids_with_command ("mininet"), ) )
+        sniff_thread.daemon = True
+        sniff_thread.start()
 
         #Start CLI thread if requested
         if self.appPrefs['startCLI'] == 1:
@@ -1178,86 +1200,88 @@ class MiniNAM( Frame ):
             print(f"Error running lsns command: {e}")
             return []
 
+    def sniff( self, pid_list ):
+        socks = []
+        for nspid in pid_list:
+            try:
+                #create raw socket to receive everything in corresponding network namespace
+                s = nssocket(nspid, socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(0x0003))
+                socks.append(s)
+            except socket.error as msg:
+                print('Socket could not be created. Error Code : ' + str(msg[0]) + ' Message ' + msg[1])
+                sys.exit()
 
-    def sniff( self, ns_pid ):
-
-        #Create raw socket to receive everything
-        netns.setns(f"/proc/{ns_pid}/ns/net")
-
-        try:
-            s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(0x0003))
-        except socket.error as msg:
-            print('Socket could not be created. Error Code : ' + str(msg[0]) + ' Message ' + msg[1])
-            sys.exit()
-        # receive a packet
+        # receive a packet in one of the sockets
         while True:
             if self.appPrefs['displayFlows'] == 0:
                 continue
 
-            packet = s.recvfrom(65565)
+            ready_socks,_,_ = select.select(socks, [], [])
+            for s in ready_socks:
+                packet = s.recvfrom(65565)
 
-            interface = packet[1][0]
-            direction = "incoming"
-            if packet[1][2] == socket.PACKET_OUTGOING:
-                direction = "outgoing"
+                interface = packet[1][0]
+                direction = "incoming"
+                if packet[1][2] == socket.PACKET_OUTGOING:
+                    direction = "outgoing"
 
-            # packet string from tuple
-            packet = packet[0]
+                # packet string from tuple
+                packet = packet[0]
 
-            #Parse the packet and get info in headers
-            PacketInfo = packetParser(packet)
+                #Parse the packet and get info in headers
+                PacketInfo = packetParser(packet)
 
-            eth_protocol = PacketInfo['eth_protocol']
-            srcMAC, dstMAC = PacketInfo['srcMAC'], PacketInfo['dstMAC']
-            ip_protocol = PacketInfo['ip_protocol']
-            s_addr, d_addr = PacketInfo['s_addr'], PacketInfo['d_addr']
-            data = PacketInfo['data']
+                eth_protocol = PacketInfo['eth_protocol']
+                srcMAC, dstMAC = PacketInfo['srcMAC'], PacketInfo['dstMAC']
+                ip_protocol = PacketInfo['ip_protocol']
+                s_addr, d_addr = PacketInfo['s_addr'], PacketInfo['d_addr']
+                data = PacketInfo['data']
 
-            # TODO: Sniff the controller packets
+                # TODO: Sniff the controller packets
 
-            try:
-                #Skip packet if it is supposed to be filtered
-                if self.filterPacket(srcMAC, dstMAC, s_addr, d_addr, eth_protocol, ip_protocol):
+                try:
+                    #Skip packet if it is supposed to be filtered
+                    if self.filterPacket(srcMAC, dstMAC, s_addr, d_addr, eth_protocol, ip_protocol):
+                        continue
+                except:
                     continue
-            except:
-                continue
 
-            try:
-                #Make sure that the interface info exists in our topology
-                intf = self.intfExists(interface)
-                if not intf:
+                try:
+                    #Make sure that the interface info exists in our topology
+                    intf = self.intfExists(interface)
+                    if not intf:
+                        continue
+                except Exception:
                     continue
-            except Exception:
-                continue
 
-            PacketInfo['interface'] = interface
-            PacketInfo['direction'] = direction
+                PacketInfo['interface'] = interface
+                PacketInfo['direction'] = direction
 
-            try:
-                #MiniNAM sniffs packets as they are sent
-                if direction == "outgoing":
-                    intf["TXB"] += len(packet)
-                    intf["TXP"] += 1
-                    link = self.intfExists(intf["link"])
-                    if link['type'] in HOSTS_TYPES or link['type'] in ['LinuxRouter', 'LinuxSwitch', 'OVSSwitch', 'Router', 'UserSwitch']:
-                        link["RXB"] += len(packet)
-                        link["RXP"] += 1
-                        #Check if the packet should be color coded by IP
-                        if self.appPrefs['nodeColors'] == 'Source':
-                            sender = next((node for node in self.Nodes if 'ip' in node if node['ip'] == s_addr), None)
-                            PacketInfo['node_color'] = sender['color'] if sender else 'black'
-                        if self.appPrefs['nodeColors'] == 'Destination':
-                            receiver = next((node for node in self.Nodes if 'ip' in node if node['ip'] == d_addr), None)
-                            PacketInfo['node_color'] = receiver['color'] if receiver else 'black'
-                        src, dst = intf["node"], intf["link"].split('-')[0]
-                        #To view the effect of link delays LinkTime value can be replaced by actual link delays set in Mininet
-                        PacketInfo['time'] = LinkTime
-                        #Create a packet object to be displayed in the GUI
-                        self.createPacket(src, dst, PacketInfo)
+                try:
+                    #MiniNAM sniffs packets as they are sent
+                    if direction == "outgoing":
+                        intf["TXB"] += len(packet)
+                        intf["TXP"] += 1
+                        link = self.intfExists(intf["link"])
+                        if link['type'] in HOSTS_TYPES or link['type'] in ['LinuxRouter', 'LinuxSwitch', 'OVSSwitch', 'Router', 'UserSwitch']:
+                            link["RXB"] += len(packet)
+                            link["RXP"] += 1
+                            #Check if the packet should be color coded by IP
+                            if self.appPrefs['nodeColors'] == 'Source':
+                                sender = next((node for node in self.Nodes if 'ip' in node if node['ip'] == s_addr), None)
+                                PacketInfo['node_color'] = sender['color'] if sender else 'black'
+                            if self.appPrefs['nodeColors'] == 'Destination':
+                                receiver = next((node for node in self.Nodes if 'ip' in node if node['ip'] == d_addr), None)
+                                PacketInfo['node_color'] = receiver['color'] if receiver else 'black'
+                            src, dst = intf["node"], intf["link"].split('-')[0]
+                            #To view the effect of link delays LinkTime value are replaced by actual link delays set in Mininet
+                            PacketInfo['time'] = LinkTime
+                            #Create a packet object to be displayed in the GUI
+                            self.createPacket(src, dst, PacketInfo)
 
-            except Exception:
-                print('Exception in function sniff')
-                pass
+                except Exception:
+                    print('Exception in function sniff')
+                    pass
 
     def createNodes(self):
         #Drawing node Widgets
