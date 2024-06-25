@@ -978,8 +978,10 @@ class MiniNAM( Frame ):
                          metavar='block|random',
                          help=( 'node placement for --cluster '
                                 '(experimental!) ' ) )
-        opts.add_option( '--linkDelay', type="float", default=0.1,
+        opts.add_option( '--linkDelay', type="float", default=1,
                         help="link delays, ms")
+        opts.add_option( '--preserveDelays', action='store_true',
+                        default=False, help="when true, original link delays are preserved")
         opts.add_option( '--ipmininet', action='store_true',
                         default=False, help="enable ipmininet support")
         opts.add_option( '--allocateIPs', action='store_true',
@@ -1038,7 +1040,10 @@ class MiniNAM( Frame ):
             # Use link configured correctly for UserSwitch
             self.options.link = 'tcu'
 
-        link = customClass( LINKS, self.options.link )
+        if self.options.preserveDelays:
+            link = customClass( LINKS, self.options.link )
+        else:
+            link = specialClass(customClass( LINKS, self.options.link ), defaults=dict(delay=f'{self.options.linkDelay}ms'))
 
         if self.validate:
             self.validate( self.options )
