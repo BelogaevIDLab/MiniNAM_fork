@@ -82,6 +82,8 @@ import re
 from pyroute2 import netns
 import select
 
+import networkx as nx
+
 MININET_VERSION = re.sub(r'[^\d\.]', '', VERSION)
 if StrictVersion(MININET_VERSION) > StrictVersion('2.0'):
     from mininet.node import IVSSwitch
@@ -1289,10 +1291,26 @@ class MiniNAM( Frame ):
                     pass
 
     def createNodes(self):
+        G = nx.Graph()
+        for data in self.intfData:
+            G.add_edge (data["interface"].split('-')[0], data["link"].split('-')[0])
+        for switch in self.Nodes:
+            try:
+                for ctrlr in switch['controllers']:
+                    G.add_edge (ctrlr, switch['name'])
+            except:
+                pass
+        pos = nx.spring_layout (G, center=(self.cwidth // 2, self.cheight // 2), scale = min(self.cwidth - 300, self.cheight - 300))
+
         #Drawing node Widgets
         for node in self.Nodes:
             if not self.findWidgetByName(node['name']):
-                location = self.nodelocations[node['name']] if node['name'] in self.nodelocations else (random.randrange(70,self.cwidth-100), random.randrange(70,self.cheight-100))
+                if node['name'] in self.nodelocations:
+                    location = self.nodelocations[node['name']]
+                elif node['name'] in pos:
+                    location = pos[node['name']]
+                else:
+                    location = (random.randrange(70,self.cwidth-100), random.randrange(70,self.cheight-100))
                 self.newNamedNode(node, location[0], location[1])
 
         #Drawing data links
