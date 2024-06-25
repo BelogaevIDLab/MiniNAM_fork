@@ -796,8 +796,10 @@ class MiniNAM( Frame ):
         self.TopoInfo()
         self.createNodes()
 
-        # Place window at bottom
-        self.top.geometry("%dx%d%+d%+d" % (self.cwidth, self.cheight, 1, 1000))
+        # Place window to center of the screen
+        self.top.geometry("%dx%d%+d%+d" % (self.cwidth, self.cheight,
+            (self.top.winfo_screenwidth() - self.cwidth) // 2,
+            (self.top.winfo_screenheight() - self.cheight) // 2))
 
         # Close window gracefully
         Wm.wm_protocol( self.top, name='WM_DELETE_WINDOW', func=self.quit )
