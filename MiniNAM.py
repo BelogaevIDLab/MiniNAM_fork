@@ -2078,12 +2078,13 @@ class MiniNAM( Frame ):
         info.deiconify()
 
     def updateIntfInfo (self):
-        self.printdata()
+        #self.printdata()
         items = ['interface', 'link', 'type', 'ip', 'mac',
                   'TXP', 'RXP', 'TXB', 'RXB', ]
         for data in self.intfData:
             for item in items:
                 data[str('label_' + item)].config(text=str(data[item]))
+        self.infoBox.after(1000, self.updateIntfInfo)
 
     def startCLI(self):
         # Don't start a second CLI thread if it already exists
