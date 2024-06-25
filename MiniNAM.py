@@ -1265,16 +1265,13 @@ class MiniNAM( Frame ):
 
                 PacketInfo['interface'] = interface
                 PacketInfo['direction'] = direction
+                PacketInfo['size'] = len(packet)
 
                 try:
                     #MiniNAM sniffs packets as they are sent
                     if direction == "outgoing":
-                        intf["TXB"] += len(packet)
-                        intf["TXP"] += 1
                         link = self.intfExists(intf["link"])
                         if link['type'] in HOSTS_TYPES or link['type'] in ['LinuxRouter', 'LinuxSwitch', 'OVSSwitch', 'Router', 'UserSwitch']:
-                            link["RXB"] += len(packet)
-                            link["RXP"] += 1
                             #Check if the packet should be color coded by IP
                             if self.appPrefs['nodeColors'] == 'Source':
                                 sender = next((node for node in self.Nodes if 'ip' in node if node['ip'] == s_addr), None)
@@ -1441,7 +1438,15 @@ class MiniNAM( Frame ):
             delta = deltax, deltay
 
             t = float(self.appPrefs['flowTime']) * float(PacketInfo['time']) / 50000  # 1000 for ms and 50 for steps
+            intf = self.intfExists(PacketInfo['interface'])
+            intf["TXB"] += PacketInfo['size']
+            intf["TXP"] += 1
+
             self.movePacket(packet, packetImage, delta, t)
+
+            link = self.intfExists(intf["link"])
+            link["RXB"] += PacketInfo['size']
+            link["RXP"] += 1
 
         except Exception:
             pass
