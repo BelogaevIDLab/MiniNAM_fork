@@ -83,6 +83,7 @@ from pyroute2 import netns
 import select
 
 import networkx as nx
+from pydfql import DictDisplayFilter
 
 MININET_VERSION = re.sub(r'[^\d\.]', '', VERSION)
 if StrictVersion(MININET_VERSION) > StrictVersion('2.0'):
@@ -92,9 +93,6 @@ MININAM_VERSION = "1.0.1"
 # Fix setuptools' evil madness, and open up (more?) security holes
 if 'PYTHONPATH' in os.environ:
     sys.path = os.environ[ 'PYTHONPATH' ].split( ':' ) + sys.path
-
-Eth_Protocols = {'8':'IP', '1544':'ARP', '56710':'IPv6'}
-IP_Protocols = {'1':'ICMP', '6':'TCP', '17':'UDP', '58':'ICMPv6'}
 
 TOPODEF = 'minimal'
 TOPOS = {'minimal': MinimalTopo,
@@ -151,25 +149,121 @@ def version( *_args ):
     print("MiniNAM: %s" % MININAM_VERSION)
     sys.exit()
 
-def packetParser(packet):
+def parseHighLayers(packet, protocol, cur_pos, packet_dict):
+    # TCP protocol
+    if protocol == 6:
+        t = cur_pos
+        tcp_header = packet[t:t + 20]
 
-    PacketInfo = {}
-    PacketInfo['eth_protocol'] = None
-    PacketInfo['srcMAC'] = None
-    PacketInfo['dstMAC'] = None
-    PacketInfo['s_addr'] = None
-    PacketInfo['d_addr'] = None
-    PacketInfo['ip_protocol'] = None
-    PacketInfo['ttl'] = None
-    PacketInfo['source_port'] = None
-    PacketInfo['dest_port'] = None
-    PacketInfo['sequence'] = None
-    PacketInfo['data'] = None
-    PacketInfo['icmp_type'] = None
-    PacketInfo['code'] = None
-    PacketInfo['checksum'] = None
-    PacketInfo['length'] = None
-    PacketInfo['protocol_type'] = None
+        # now unpack them
+        tcph = unpack('!2H2L2B3H', tcp_header)
+
+        source_port = tcph[0]
+        dest_port = tcph[1]
+        sequence = tcph[2]
+        acknowledgement = tcph[3]
+        doff_reserved = tcph[4]
+        tcph_length = doff_reserved >> 4
+
+        h_size = cur_pos + tcph_length * 4
+        # get data from the packet
+        data = packet[h_size:]
+
+        packet_dict['ip_protocol'] = 'TCP'
+
+        packet_dict['tcp'] = {}
+        packet_dict['tcp']['srcport'] = int(source_port)
+        packet_dict['tcp']['dstport'] = int(dest_port)
+
+        if len(data) > 16:
+            try_bgp = data[0:16]
+            bgp_marker = unpack('!QQ', try_bgp)
+            if bgp_marker[0] == 0xFFFFFFFFFFFFFFFF and bgp_marker[1] == 0xFFFFFFFFFFFFFFFF:
+                packet_dict['bgp'] = {}
+                bgp_fields_raw = data[16:19]
+                bgp_fields = unpack('!HB', bgp_fields_raw)
+                packet_dict['bgp']['type'] = int(bgp_fields[1])
+                packet_dict['ip_protocol'] = 'BGP'
+
+    # ICMP Packets
+    elif protocol == 1 or protocol == 58:
+        u = cur_pos
+        icmph_length = 4
+        icmp_header = packet[u:u + 4]
+
+        # now unpack them
+        icmph = unpack('!BBH', icmp_header)
+
+        icmp_type = icmph[0]
+        code = icmph[1]
+        checksum = icmph[2]
+
+        h_size = cur_pos + icmph_length
+        data_size = len(packet) - h_size
+
+        # get data from the packet
+        data = packet[h_size:]
+
+        if protocol == 1:
+            protocolName = 'icmp'
+            packet_dict['ip_protocol'] = 'ICMP'
+        else:
+            protocolName = 'icmpv6'
+            packet_dict['ip_protocol'] = 'ICMPv6'
+
+        packet_dict[protocolName] = {}
+        packet_dict[protocolName]['type'] = int(icmp_type)
+    # UDP packets
+    elif protocol == 17:
+        u = cur_pos
+        udph_length = 8
+        udp_header = packet[u:u + 8]
+
+        # now unpack them
+        udph = unpack('!HHHH', udp_header)
+
+        source_port = udph[0]
+        dest_port = udph[1]
+        length = udph[2]
+        checksum = udph[3]
+
+        h_size = cur_pos + udph_length
+        data_size = len(packet) - h_size
+
+        # get data from the packet
+        data = packet[h_size:]
+
+        packet_dict['ip_protocol'] = 'UDP'
+
+        packet_dict['udp'] = {}
+        packet_dict['udp']['srcport'] = int(source_port)
+        packet_dict['udp']['dstport'] = int(dest_port)
+    # OSPF Packets
+    if protocol == 89:
+        ospf_header = packet[cur_pos:cur_pos+12]
+        ospfh = unpack('!BBHII', ospf_header)
+
+        version = ospfh[0]
+        type = ospfh[1]
+        packet_length = ospfh[2]
+        router_id = ospfh[3]
+        area_id = ospfh[4]
+
+        packet_dict['ip_protocol'] = 'OSPF'
+
+        packet_dict['ospf'] = {}
+        packet_dict['ospf']['version'] = int(version)
+        packet_dict['ospf']['type'] = int(type)
+        packet_dict['ospf']['router_id'] = router_id
+        packet_dict['ospf']['area_id'] = area_id
+    # Other IP packet like IGMP can be parsed here.
+    else:
+        pass
+
+def packetParser(packet):
+    packet_dict = {}
+    packet_dict['eth_protocol'] = ''
+    packet_dict['ip_protocol'] = ''
 
     try:
         # parse ethernet header
@@ -183,9 +277,9 @@ def packetParser(packet):
         dstMAC = ':'.join('%02x' % b for b in packet[0:6])
         srcMAC = ':'.join('%02x' % b for b in packet[6:12])
 
-        PacketInfo['srcMAC'] = str(srcMAC)
-        PacketInfo['dstMAC'] = str(dstMAC)
-        PacketInfo['eth_protocol'] = str(eth_protocol)
+        packet_dict['eth'] = {}
+        packet_dict['eth']['src'] = str(srcMAC)
+        packet_dict['eth']['dst'] = str(dstMAC)
 
         # Parse IPv4 packets
         if eth_protocol == 8:
@@ -206,88 +300,13 @@ def packetParser(packet):
             s_addr = socket.inet_ntoa(iph[8])
             d_addr = socket.inet_ntoa(iph[9])
 
-            PacketInfo['s_addr'] = s_addr
-            PacketInfo['d_addr'] = d_addr
-            PacketInfo['ip_protocol'] = str(protocol)
-            PacketInfo['ttl'] = str(ttl)
+            packet_dict['eth_protocol'] = 'IP'
 
-            # TCP protocol
-            if protocol == 6:
-                t = iph_length + eth_length
-                tcp_header = packet[t:t + 32]
+            packet_dict['ip'] = {}
+            packet_dict['ip']['src'] = s_addr
+            packet_dict['ip']['dst'] = d_addr
 
-                # now unpack them
-                tcph = unpack('!HHLLBBHHHBBBBLL', tcp_header)
-
-                source_port = tcph[0]
-                dest_port = tcph[1]
-                sequence = tcph[2]
-                acknowledgement = tcph[3]
-                doff_reserved = tcph[4]
-                tcph_length = doff_reserved >> 4
-                TSVal =  tcph[13]
-
-
-                h_size = eth_length + iph_length + tcph_length * 4
-                # get data from the packet
-                data = packet[h_size:]
-                PacketInfo['source_port'] = source_port
-                PacketInfo['dest_port'] = dest_port
-                PacketInfo['sequence'] = sequence
-                PacketInfo['acknowledgement'] = acknowledgement
-                PacketInfo['TSVal'] = TSVal
-                PacketInfo['data'] = data
-
-            # ICMP Packets
-            elif protocol == 1:
-                u = iph_length + eth_length
-                icmph_length = 4
-                icmp_header = packet[u:u + 4]
-
-                # now unpack them
-                icmph = unpack('!BBH', icmp_header)
-
-                icmp_type = icmph[0]
-                code = icmph[1]
-                checksum = icmph[2]
-
-                h_size = eth_length + iph_length + icmph_length
-                data_size = len(packet) - h_size
-
-                # get data from the packet
-                data = packet[h_size:]
-                PacketInfo['icmp_type'] = str(icmp_type)
-                PacketInfo['code'] = str(code)
-                PacketInfo['checksum'] = str(checksum)
-                PacketInfo['data'] = data
-
-            # UDP packets
-            elif protocol == 17:
-                u = iph_length + eth_length
-                udph_length = 8
-                udp_header = packet[u:u + 8]
-
-                # now unpack them
-                udph = unpack('!HHHH', udp_header)
-
-                source_port = udph[0]
-                dest_port = udph[1]
-                length = udph[2]
-                checksum = udph[3]
-
-                h_size = eth_length + iph_length + udph_length
-                data_size = len(packet) - h_size
-
-                # get data from the packet
-                data = packet[h_size:]
-                PacketInfo['source_port'] = source_port
-                PacketInfo['dest_port'] = dest_port
-                PacketInfo['length'] = length
-                PacketInfo['checksum'] = checksum
-                PacketInfo['data'] = data
-            # Other IP packet like IGMP can be parsed here.
-            else:
-                pass
+            parseHighLayers (packet, protocol, eth_length+iph_length, packet_dict)
 
         #Parse ARP packets
         elif eth_protocol == 1544:
@@ -296,15 +315,19 @@ def packetParser(packet):
             s_addr = socket.inet_ntoa(arph[6])
             d_addr = socket.inet_ntoa(arph[8])
             protocol_type = arph[1]
-            PacketInfo['s_addr'] = str(s_addr)
-            PacketInfo['d_addr'] = str(d_addr)
-            PacketInfo['protocol_type'] = protocol_type
+
+            packet_dict['eth_protocol'] = 'ARP'
+
+            packet_dict['arp'] = {}
+            packet_dict['arp']['type'] = int(protocol_type)
+
         
         #Parse IPv6 packets
         elif eth_protocol == 56710:
             # Parse IP header
             # take first 40 characters for the ip header
-            ip_header = packet[eth_length:40 + eth_length]
+            iph_length = 40
+            ip_header = packet[eth_length:iph_length + eth_length]
 
             # now unpack them
             iph = unpack('!IHBB16s16s', ip_header)
@@ -318,44 +341,30 @@ def packetParser(packet):
             
             s_addr = socket.inet_ntop(socket.AF_INET6, iph[4])
             d_addr = socket.inet_ntop(socket.AF_INET6, iph[5])
+
+            packet_dict['eth_protocol'] = 'IPv6'
+
+            packet_dict['ipv6'] = {}
+            packet_dict['ipv6']['src'] = s_addr
+            packet_dict['ipv6']['dst'] = d_addr
             
-            PacketInfo['s_addr'] = s_addr
-            PacketInfo['d_addr'] = d_addr
-            PacketInfo['ip_protocol'] = str(next_header)
-            PacketInfo['ttl'] = str(hop_limit)
+            # Skip all extension headers
+            cur_pos = iph_length + eth_length
+            while next_header in [0, 43, 44, 51, 50, 60, 135, 139, 140, 253, 254]:
+                next_and_length_raw = packet[cur_pos:cur_pos + 2]
+                next_and_length = unpack('!BB', next_and_length_raw)
+                next_header = next_and_length[0]
+                ext_length = next_and_length[1]
+                cur_pos += ext_length
 
-            # ICMPv6 Packets
-            if next_header == 58:
-                u = iph_length + eth_length
-                icmph_length = 4
-                icmp_header = packet[u:u + 4]
-
-                # now unpack them
-                icmph = unpack('!BBH', icmp_header)
-
-                icmp_type = icmph[0]
-                code = icmph[1]
-                checksum = icmph[2]
-
-                h_size = eth_length + iph_length + icmph_length
-                data_size = len(packet) - h_size
-
-                # get data from the packet
-                data = packet[h_size:]
-                PacketInfo['icmp_type'] = str(icmp_type)
-                PacketInfo['code'] = str(code)
-                PacketInfo['checksum'] = str(checksum)
-                PacketInfo['data'] = data
-            # Other IPv6 packets like TCP or UDP can be parsed here.
-            else:
-                pass
+            parseHighLayers (packet, next_header, cur_pos, packet_dict)
         else:
             pass
 
-        return PacketInfo
+        return packet_dict
 
     except:
-        return PacketInfo
+        return packet_dict
 
 def get_ns_path(nspid=None):
         nspath = '/proc/%d/ns/net' % int(nspid)
@@ -438,28 +447,45 @@ class PrefsDialog(tkSimpleDialog.Dialog):
         Label(self.typeColorsFrame, text="ARP").grid(row=0, column=0, sticky=W)
         self.ARPColor = StringVar(self.typeColorsFrame)
         self.ARPColor.set(self.typeColors["ARP"])
-        self.ARPColorMenu = OptionMenu(self.typeColorsFrame, self.ARPColor, "None", "Red", "Green", "Blue", "Purple")
+        self.ARPColorMenu = OptionMenu(self.typeColorsFrame, self.ARPColor, "None", "Red", "Green", "Blue", "Purple", "Yellow", "Cyan")
         self.ARPColorMenu.grid(row=1, column=0, sticky=W)
-
-        # Selection of color for TCP
-        Label(self.typeColorsFrame, text="TCP").grid(row=0, column=1, sticky=W)
-        self.TCPColor = StringVar(self.typeColorsFrame)
-        self.TCPColor.set(self.typeColors["TCP"])
-        self.TCPColorMenu = OptionMenu(self.typeColorsFrame, self.TCPColor, "None", "Red", "Green", "Blue", "Purple")
-        self.TCPColorMenu.grid(row=1, column=1, sticky=W)
         # Selection of color for ICMP
-        Label(self.typeColorsFrame, text="ICMP").grid(row=0, column=2, sticky=W)
+        Label(self.typeColorsFrame, text="ICMP").grid(row=0, column=1, sticky=W)
         self.ICMPColor = StringVar(self.typeColorsFrame)
         self.ICMPColor.set(self.typeColors["ICMP"])
-        self.ICMPColorMenu = OptionMenu(self.typeColorsFrame, self.ICMPColor, "None", "Red", "Green", "Blue", "Purple")
+        self.ICMPColorMenu = OptionMenu(self.typeColorsFrame, self.ICMPColor, "None", "Red", "Green", "Blue", "Purple", "Yellow", "Cyan")
+        self.ICMPColorMenu.grid(row=1, column=1, sticky=W)
+        # Selection of color for ICMPv6
+        Label(self.typeColorsFrame, text="ICMPv6").grid(row=0, column=2, sticky=W)
+        self.ICMPColor = StringVar(self.typeColorsFrame)
+        self.ICMPColor.set(self.typeColors["ICMPv6"])
+        self.ICMPColorMenu = OptionMenu(self.typeColorsFrame, self.ICMPColor, "None", "Red", "Green", "Blue", "Purple", "Yellow", "Cyan")
         self.ICMPColorMenu.grid(row=1, column=2, sticky=W)
+        # Selection of color for TCP
+        Label(self.typeColorsFrame, text="TCP").grid(row=0, column=3, sticky=W)
+        self.TCPColor = StringVar(self.typeColorsFrame)
+        self.TCPColor.set(self.typeColors["TCP"])
+        self.TCPColorMenu = OptionMenu(self.typeColorsFrame, self.TCPColor, "None", "Red", "Green", "Blue", "Purple", "Yellow", "Cyan")
+        self.TCPColorMenu.grid(row=1, column=3, sticky=W)
+
         # Selection of color for UDP
-        Label(self.typeColorsFrame, text="UDP").grid(row=0, column=3, sticky=W)
+        Label(self.typeColorsFrame, text="UDP").grid(row=2, column=0, sticky=W)
         self.UDPColor = StringVar(self.typeColorsFrame)
         self.UDPColor.set(self.typeColors["UDP"])
-        self.UDPColorMenu = OptionMenu(self.typeColorsFrame, self.UDPColor, "None", "Red", "Green", "Blue", "Purple")
-        self.UDPColorMenu.grid(row=1, column=3, sticky=W)
-
+        self.UDPColorMenu = OptionMenu(self.typeColorsFrame, self.UDPColor, "None", "Red", "Green", "Blue", "Purple", "Yellow", "Cyan")
+        self.UDPColorMenu.grid(row=3, column=0, sticky=W)
+        # Selection of color for OSPF
+        Label(self.typeColorsFrame, text="OSPF").grid(row=2, column=1, sticky=W)
+        self.OSPFColor = StringVar(self.typeColorsFrame)
+        self.OSPFColor.set(self.typeColors["OSPF"])
+        self.OSPFColorMenu = OptionMenu(self.typeColorsFrame, self.OSPFColor, "None", "Red", "Green", "Blue", "Purple", "Yellow", "Cyan")
+        self.OSPFColorMenu.grid(row=3, column=1, sticky=W)
+        # Selection of color for BGP
+        Label(self.typeColorsFrame, text="BGP").grid(row=2, column=2, sticky=W)
+        self.BGPColor = StringVar(self.typeColorsFrame)
+        self.BGPColor.set(self.typeColors["BGP"])
+        self.BGPColorMenu = OptionMenu(self.typeColorsFrame, self.BGPColor, "None", "Red", "Green", "Blue", "Purple", "Yellow", "Cyan")
+        self.BGPColorMenu.grid(row=3, column=2, sticky=W)
 
         # Selection of terminal type
         Label(self.rootFrame, text="Default Terminal:").grid(row=5, sticky=W)
@@ -478,6 +504,7 @@ class PrefsDialog(tkSimpleDialog.Dialog):
             self.cliButton.deselect()
         else:
             self.cliButton.select()
+
 
         # Field for showing IP Packets
         Label(self.rootFrame, text="Show IP address on packets:").grid(row=7, sticky=W)
@@ -540,7 +567,6 @@ class FiltersDialog(tkSimpleDialog.Dialog):
         "Create dialog body"
         self.rootFrame = master
 
-
         # Field for Show Packet Types
         Label(self.rootFrame, text="Show Packet Types:").grid(row=0, sticky=E)
         self.showPackets = Text(self.rootFrame, height = 1)
@@ -573,6 +599,11 @@ class FiltersDialog(tkSimpleDialog.Dialog):
         for item in hideToIPMAC:
             self.hideToIPMAC.insert(END, item + ', ')
 
+        # Field for Wireshark-like display filter
+        Label(self.rootFrame, text="Wireshark-like display filter:").grid(row=5, sticky=E)
+        self.displayFilter = Text(self.rootFrame, height = 1)
+        self.displayFilter.grid(row=5, column=1)
+        self.displayFilter.insert(END, self.filterValues['displayFilter'])
 
         # initial focus
         return self.showPackets
@@ -582,6 +613,7 @@ class FiltersDialog(tkSimpleDialog.Dialog):
         hidePackets = str(self.hidePackets.get("1.0",'end-1c')).replace(' ', '').replace('\n', '').replace('\r', '').split(',')
         hideFromIPMAC = str(self.hideFromIPMAC.get("1.0",'end-1c')).replace(' ', '').replace('\n', '').replace('\r', '').split(',')
         hideToIPMAC = str(self.hideToIPMAC.get("1.0",'end-1c')).replace(' ', '').replace('\n', '').replace('\r', '').split(',')
+        displayFilter = str(self.displayFilter.get("1.0",'end-1c')).replace('\n', '').replace('\r', '')
         # Removing empty items from lists
         showPackets = [_f for _f in showPackets if _f]
         hidePackets = [_f for _f in hidePackets if _f]
@@ -591,9 +623,9 @@ class FiltersDialog(tkSimpleDialog.Dialog):
             'showPackets': showPackets,
             'hidePackets': hidePackets,
             'hideFromIPMAC': hideFromIPMAC,
-            'hideToIPMAC': hideToIPMAC
+            'hideToIPMAC': hideToIPMAC,
+            'displayFilter': displayFilter
         }
-
 
     @staticmethod
     def getOvsVersion():
@@ -659,7 +691,7 @@ class MiniNAM( Frame ):
             'displayHosts': 1,
             'flowTime': FLOWTIME[FLOWTIMEDEF],
             'nodeColors': 'Source',
-            'typeColors': {'ARP': 'Red', 'TCP': 'Green', 'ICMP': 'Blue', 'ICMPv6': 'Blue', 'UDP': 'Green'},
+            'typeColors': {'ARP': 'Red', 'TCP': 'Green', 'ICMP': 'Blue', 'ICMPv6': 'Blue', 'UDP': 'Green', 'OSPF': 'Yellow', 'BGP': 'Cyan'},
             'startCLI': 1,
             'terminalType': 'xterm',
             'showAddr': 'None',
@@ -667,10 +699,11 @@ class MiniNAM( Frame ):
             'identifyFlows': 1
         }
         self.appFilters={
-            'showPackets': ['TCP', 'UDP', 'ICMP', 'ICMPv6'],    #ARP?
+            'showPackets': ['ALL'],
             'hidePackets': [],
             'hideFromIPMAC': ['0.0.0.0', '255.255.255.255'],
-            'hideToIPMAC': ['0.0.0.0', '255.255.255.255']
+            'hideToIPMAC': ['0.0.0.0', '255.255.255.255'],
+            'displayFilter': ''
         }
 
         # Style
@@ -982,7 +1015,7 @@ class MiniNAM( Frame ):
                          metavar='block|random',
                          help=( 'node placement for --cluster '
                                 '(experimental!) ' ) )
-        opts.add_option( '--linkDelay', type="float", default=1,
+        opts.add_option( '--linkDelay', type="float", default=10,
                         help="link delays, ms")
         opts.add_option( '--preserveDelays', action='store_true',
                         default=False, help="when true, original link delays are preserved")
@@ -1238,19 +1271,21 @@ class MiniNAM( Frame ):
                 packet = packet[0]
 
                 #Parse the packet and get info in headers
-                PacketInfo = packetParser(packet)
+                packet_dict = packetParser(packet)
 
-                eth_protocol = PacketInfo['eth_protocol']
-                srcMAC, dstMAC = PacketInfo['srcMAC'], PacketInfo['dstMAC']
-                ip_protocol = PacketInfo['ip_protocol']
-                s_addr, d_addr = PacketInfo['s_addr'], PacketInfo['d_addr']
-                data = PacketInfo['data']
+                eth_protocol = packet_dict['eth_protocol']
+                srcMAC, dstMAC = packet_dict['eth']['src'], packet_dict['eth']['dst']
+                ip_protocol = packet_dict['ip_protocol']
+                if 'ip' in packet_dict['eth_protocol'].lower():
+                    s_addr, d_addr = packet_dict[packet_dict['eth_protocol'].lower()]['src'], packet_dict[packet_dict['eth_protocol'].lower()]['dst']
+                else:
+                    s_addr, d_addr = '', ''
 
                 # TODO: Sniff the controller packets
 
                 try:
                     #Skip packet if it is supposed to be filtered
-                    if self.filterPacket(srcMAC, dstMAC, s_addr, d_addr, eth_protocol, ip_protocol):
+                    if self.filterPacket(srcMAC, dstMAC, s_addr, d_addr, eth_protocol, ip_protocol, packet_dict):
                         continue
                 except:
                     continue
@@ -1263,9 +1298,9 @@ class MiniNAM( Frame ):
                 except Exception:
                     continue
 
-                PacketInfo['interface'] = interface
-                PacketInfo['direction'] = direction
-                PacketInfo['size'] = len(packet)
+                packet_dict['interface'] = interface
+                packet_dict['direction'] = direction
+                packet_dict['size'] = len(packet)
 
                 try:
                     #MiniNAM sniffs packets as they are sent
@@ -1275,15 +1310,15 @@ class MiniNAM( Frame ):
                             #Check if the packet should be color coded by IP
                             if self.appPrefs['nodeColors'] == 'Source':
                                 sender = next((node for node in self.Nodes if 'ip' in node if node['ip'] == s_addr), None)
-                                PacketInfo['node_color'] = sender['color'] if sender else 'black'
+                                packet_dict['node_color'] = sender['color'] if sender else 'black'
                             if self.appPrefs['nodeColors'] == 'Destination':
                                 receiver = next((node for node in self.Nodes if 'ip' in node if node['ip'] == d_addr), None)
-                                PacketInfo['node_color'] = receiver['color'] if receiver else 'black'
+                                packet_dict['node_color'] = receiver['color'] if receiver else 'black'
                             src, dst = intf["node"], intf["link"].split('-')[0]
                             #To view the effect of link delays LinkTime value are replaced by actual link delays set in Mininet
-                            PacketInfo['time'] = LinkTime
+                            packet_dict['time'] = LinkTime
                             #Create a packet object to be displayed in the GUI
-                            self.createPacket(src, dst, PacketInfo)
+                            self.createPacket(src, dst, packet_dict)
 
                 except Exception:
                     print('Exception in function sniff')
@@ -1327,8 +1362,12 @@ class MiniNAM( Frame ):
             except:
                 pass
 
-    def filterPacket(self, srcMAC, dstMAC, s_addr, d_addr, eth_protocol, ip_protocol):
+    def filterPacket(self, srcMAC, dstMAC, s_addr, d_addr, eth_protocol, ip_protocol, packet_dict):
         try:
+            filtered_data = DictDisplayFilter([packet_dict]).filter(self.appFilters['displayFilter'].lower())
+            if not len(list(filtered_data)):
+                return True
+
             if s_addr is not None:
                 if s_addr in self.appFilters['hideFromIPMAC']:
                     return True
@@ -1342,40 +1381,40 @@ class MiniNAM( Frame ):
                 if dstMAC in self.appFilters['hideToIPMAC']:
                     return True
             if ip_protocol is not None:
-                if IP_Protocols[str(ip_protocol)] in self.appFilters['hidePackets']:
+                if ip_protocol in self.appFilters['hidePackets']:
                     return True
             if eth_protocol is not None:
-                if Eth_Protocols[str(eth_protocol)] in self.appFilters['hidePackets']:
+                if eth_protocol in self.appFilters['hidePackets']:
                     return True
             if 'ALL' in [t.upper() for t in self.appFilters['showPackets']]:
                 return False
             if ip_protocol is not None:
-                if IP_Protocols[str(ip_protocol)] in self.appFilters['showPackets']:
+                if ip_protocol in self.appFilters['showPackets']:
                     return False
             if eth_protocol is not None:
-                if Eth_Protocols[str(eth_protocol)] in self.appFilters['showPackets']:
+                if eth_protocol in self.appFilters['showPackets']:
                     return False
+
             return True
         except:
             return True
 
-    def createPacket(self, src, dst, PacketInfo):
+    def createPacket(self, src, dst, packet_dict):
         try:
             #Get the queue in which the packet should be added
-            q = self.getQueue(PacketInfo)
+            q = self.getQueue(packet_dict)
             if q is not None:
                 #Refresh a queue if it grows above 100 packets
                 if q.qsize() > 100:
                     self.clearQueue(q)
                 #Create a thread to display packet and add it to the queue
-                thr = Thread(target= self.displayPacket, args=(src, dst, PacketInfo))
+                thr = Thread(target= self.displayPacket, args=(src, dst, packet_dict))
                 thr.daemon = True
                 q.put(thr)
         except Exception as e:
             print (e)
 
-    def displayPacket(self, src, dst, PacketInfo):
-
+    def displayPacket(self, src, dst, packet_dict):
         try:
             c = self.canvas
             s = self.findWidgetByName(src)
@@ -1390,19 +1429,19 @@ class MiniNAM( Frame ):
 
             #Color code packet based on IP if needed
             try:
-                node_color = PacketInfo["node_color"]
+                node_color = packet_dict["node_color"]
             except:
                 node_color = 'black'
             draw.polygon([(10, 0), (10, 15), (30, 15), (30, 0)], node_color)
 
             # Color code packet by type
             try:
-                eth_color = self.appPrefs['typeColors'][Eth_Protocols[PacketInfo['eth_protocol']]]
+                eth_color = self.appPrefs['typeColors'][packet_dict['eth_protocol']]
                 if eth_color == 'None': eth_color = 'black'
             except:
                 eth_color = None
             try:
-                ip_color = self.appPrefs['typeColors'][IP_Protocols[PacketInfo["ip_protocol"]]]
+                ip_color = self.appPrefs['typeColors'][packet_dict["ip_protocol"]]
                 if ip_color == 'None':  ip_color = 'black'
             except:
                 ip_color = None
@@ -1422,9 +1461,15 @@ class MiniNAM( Frame ):
 
             else:
                 if self.appPrefs['showAddr'] == 'Source':
-                    addr = PacketInfo['s_addr']
+                    if 'ip' in packet_dict['eth_protocol'].lower():
+                        addr = packet_dict[packet_dict['eth_protocol'].lower()]['src']
+                    else:
+                        addr = ''
                 elif self.appPrefs['showAddr'] == 'Destination':
-                    addr = PacketInfo['d_addr']
+                    if 'ip' in packet_dict['eth_protocol'].lower():
+                        addr = packet_dict[packet_dict['eth_protocol'].lower()]['dst']
+                    else:
+                        addr = ''
 
                 address = addr.split('.')[0] + '.' + addr.split('.')[-1]
                 draw.text((0, 0), address)
@@ -1437,15 +1482,15 @@ class MiniNAM( Frame ):
             deltay = (dsty - srcy) / 50
             delta = deltax, deltay
 
-            t = float(self.appPrefs['flowTime']) * float(PacketInfo['time']) / 50000  # 1000 for ms and 50 for steps
-            intf = self.intfExists(PacketInfo['interface'])
-            intf["TXB"] += PacketInfo['size']
+            t = float(self.appPrefs['flowTime']) * float(packet_dict['time']) / 50000  # 1000 for ms and 50 for steps
+            intf = self.intfExists(packet_dict['interface'])
+            intf["TXB"] += packet_dict['size']
             intf["TXP"] += 1
 
             self.movePacket(packet, packetImage, delta, t)
 
             link = self.intfExists(intf["link"])
-            link["RXB"] += PacketInfo['size']
+            link["RXB"] += packet_dict['size']
             link["RXP"] += 1
 
         except Exception:
@@ -1464,13 +1509,16 @@ class MiniNAM( Frame ):
         c.delete(packet)
         self.packetImage.remove(image)
 
-    def getQueue(self, PacketInfo):
-        eth_protocol, ip_protocol = PacketInfo['eth_protocol'], PacketInfo['ip_protocol']
-        s_addr, d_addr = PacketInfo['s_addr'], PacketInfo['d_addr']
-        interface = PacketInfo['interface']
+    def getQueue(self, packet_dict):
+        eth_protocol, ip_protocol = packet_dict['eth_protocol'], packet_dict['ip_protocol']
+        if 'ip' in packet_dict['eth_protocol'].lower():
+            s_addr, d_addr = packet_dict[packet_dict['eth_protocol'].lower()]['src'], packet_dict[packet_dict['eth_protocol'].lower()]['dst']
+        else:
+            s_addr, d_addr = '', ''
+        interface = packet_dict['interface']
         addr1, addr2 = s_addr, d_addr
 
-        t = float(self.appPrefs['flowTime']) * float(PacketInfo['time']) / 50000   #sec to ms 1000 and 50 steps
+        t = float(self.appPrefs['flowTime']) * float(packet_dict['time']) / 50000   #sec to ms 1000 and 50 steps
 
         #Separate queue for each interface for real-time or if not trying to identify flows
         if self.appPrefs['flowTime'] == 1 or self.appPrefs['identifyFlows'] == 0:
@@ -2041,6 +2089,7 @@ class MiniNAM( Frame ):
         filterBox = FiltersDialog(self, title='Filters', filterDefaults=filterDefaults)
         if filterBox.result:
             self.appFilters = filterBox.result
+            #print(self.appFilters)
 
     def listBridge( self, _ignore=None ):
         if ( self.selection is None or
