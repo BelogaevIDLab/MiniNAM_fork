@@ -1193,8 +1193,8 @@ class MiniNAM( Frame ):
             for intf in value.intfList():
                 intf2 = str(intf.link).replace(intf.name,'').replace('<->','')
                 if intf2 != 'None':
-                    self.intfData.append({'node': item, 'type': value.__class__.__name__, 'interface': intf.name, 'mac': intf.mac, 'ip':intf.ip,
-                                  'link': intf2, 'TXP': 0, 'RXP': 0, 'TXB': 0, 'RXB': 0})
+                    self.intfData.append({'node': item, 'type': value.__class__.__name__, 'interface': intf.name, 'mac': intf.mac, 'ipv4':intf.ip,
+                        'ipv6': intf.ip6 if hasattr(intf, 'ip6') else None, 'link': intf2, 'TXP': 0, 'RXP': 0, 'TXB': 0, 'RXB': 0})
 
         #To find and save the controller that each switch is connected to. Needed because there can be more than one controller.
         for switch in self.Nodes:
@@ -2000,7 +2000,7 @@ class MiniNAM( Frame ):
 
     def printdata( self ):
         #Convienience function to print interface data while developing
-        keys = ["node", "type", "interface", "ip", "dgw", "link", "TXP", "RXP", "TXB", "RXB", "mac"]
+        keys = ["node", "type", "interface", "ipv4", "ipv6", "dgw", "link", "TXP", "RXP", "TXB", "RXB", "mac"]
         row_format = "{:>15}" * (len(keys) + 1)
         print(row_format.format("", *keys))
         for data in self.intfData:
@@ -2111,21 +2111,22 @@ class MiniNAM( Frame ):
             info = Toplevel( bg='white')
             info.title( 'Interfaces' )
 
-            columns = 9
+            columns = 10
             font = 'Helvetica 10 bold'
             widgets = []
             Label(info, text='Interface', borderwidth=0, font=font, padx=10).grid(row=0, column=0, sticky="nsew", padx=1, pady=1)
             Label(info, text='Linked To', borderwidth=0, font=font, padx=10).grid(row=0, column=1, sticky="nsew", padx=1, pady=1)
             Label(info, text='Node Type', borderwidth=0, font=font, padx=10).grid(row=0, column=2, sticky="nsew", padx=1, pady=1)
-            Label(info, text='IP Address', borderwidth=0, font=font, padx=10).grid(row=0, column=3, sticky="nsew", padx=1, pady=1)
-            Label(info, text='MAC Address', borderwidth=0, font=font, padx=10).grid(row=0, column=4, sticky="nsew", padx=1, pady=1)
-            Label(info, text='TXP', borderwidth=0, font=font, padx=10).grid(row=0, column=5, sticky="nsew", padx=1, pady=1)
-            Label(info, text='RXP', borderwidth=0, font=font, padx=10).grid(row=0, column=6, sticky="nsew", padx=1, pady=1)
-            Label(info, text='TXB', borderwidth=0, font=font, padx=10).grid(row=0, column=7, sticky="nsew", padx=1, pady=1)
-            Label(info, text='RXB', borderwidth=0, font=font, padx=10).grid(row=0, column=8, sticky="nsew", padx=1, pady=1)
+            Label(info, text='IPv4 Address', borderwidth=0, font=font, padx=10).grid(row=0, column=3, sticky="nsew", padx=1, pady=1)
+            Label(info, text='IPv6 Address', borderwidth=0, font=font, padx=10).grid(row=0, column=4, sticky="nsew", padx=1, pady=1)
+            Label(info, text='MAC Address', borderwidth=0, font=font, padx=10).grid(row=0, column=5, sticky="nsew", padx=1, pady=1)
+            Label(info, text='TXP', borderwidth=0, font=font, padx=10).grid(row=0, column=6, sticky="nsew", padx=1, pady=1)
+            Label(info, text='RXP', borderwidth=0, font=font, padx=10).grid(row=0, column=7, sticky="nsew", padx=1, pady=1)
+            Label(info, text='TXB', borderwidth=0, font=font, padx=10).grid(row=0, column=8, sticky="nsew", padx=1, pady=1)
+            Label(info, text='RXB', borderwidth=0, font=font, padx=10).grid(row=0, column=9, sticky="nsew", padx=1, pady=1)
             row = 0
             font = 'Helvetica 9'
-            infoOrder = ['interface', 'link', 'type', 'ip', 'mac', 'TXP', 'RXP', 'TXB', 'RXB']
+            infoOrder = ['interface', 'link', 'type', 'ipv4', 'ipv6', 'mac', 'TXP', 'RXP', 'TXB', 'RXB']
             for data in self.intfData:
                 row += 1
                 current_row = []
@@ -2141,7 +2142,7 @@ class MiniNAM( Frame ):
                 info.columnconfigure(column, weight=1)
             # Scroll bars
             ybar = Scrollbar(info, orient='vertical')
-            ybar.grid(row=0, rowspan=row+1, column=9, sticky='ns')
+            ybar.grid(row=0, rowspan=row+1, column=10, sticky='ns')
 
             hide = (lambda info=info: info.withdraw())
             self.infoBox = info
@@ -2153,7 +2154,7 @@ class MiniNAM( Frame ):
 
     def updateIntfInfo (self):
         #self.printdata()
-        items = ['interface', 'link', 'type', 'ip', 'mac',
+        items = ['interface', 'link', 'type', 'ipv4', 'ipv6', 'mac',
                   'TXP', 'RXP', 'TXB', 'RXB', ]
         for data in self.intfData:
             for item in items:
